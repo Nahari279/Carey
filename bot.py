@@ -1,51 +1,74 @@
 import asyncio
 import logging
-import os
-from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes, CallbackQueryHandler
+    ApplicationBuilder,
+    CommandHandler,
+    CallbackQueryHandler,
 )
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from reminders import (
-    start, help_command, set_daily_reminder, set_cyclic_reminder,
-    cancel_reminder, list_reminders, handle_reminder_button
+    help_command,
+    list_reminders,
+    cancel_reminder,
+    set_language,
+    add_daily_reminder,
+    add_periodic_reminder,
+    handle_cancel_button,
+    send_reminders_job,
 )
+from telegram_bot_calendar import DetailedTelegramCalendar
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from data.data_store import load_data, save_data
+from data.localization import get_text
+from dotenv import load_dotenv
+import os
 
-# Enable logging
+load_dotenv()
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
-logger = logging.getLogger(__name__)
 
-# Read token from environment variable
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+# Define the scheduler globally
+scheduler = AsyncIOScheduler()
 
-async def main():
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .post_init(setup_scheduler)
-        .build()
-    )
+# Load data once at startup
+user_data = load_data()
 
-    # Register command handlers
+
+async def start(update, context):
+    user_id = str(update.effective_user.id)
+    if user_id not in user_data:
+        user_data[user_id] = {"language": "he", "reminders": []}
+        save_data(user_data)
+    text = get_text("welcome", user_data[user_id]["language"])
+    await update.message.reply_text(text)
+
+
+def setup_scheduler(application):
+    scheduler.add_job(send_reminders_job, "interval", seconds=60, args=[application])
+    scheduler.start()
+
+
+def setup_handlers(application):
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("daily", set_daily_reminder))
-    application.add_handler(CommandHandler("cyclic", set_cyclic_reminder))
-    application.add_handler(CommandHandler("cancel", cancel_reminder))
     application.add_handler(CommandHandler("list", list_reminders))
-    application.add_handler(CallbackQueryHandler(handle_reminder_button))
+    application.add_handler(CommandHandler("cancel", cancel_reminder))
+    application.add_handler(CommandHandler("lang", set_language))
+    application.add_handler(CommandHandler("daily", add_daily_reminder))
+    application.add_handler(CommandHandler("periodic", add_periodic_reminder))
+    application.add_handler(CallbackQueryHandler(handle_cancel_button, pattern="cancel_"))
+    application.add_handler(CallbackQueryHandler(DetailedTelegramCalendar().process))
 
-    await application.run_polling()
 
-async def setup_scheduler(application):
-    application.job_queue.scheduler = AsyncIOScheduler()
-    application.job_queue.scheduler.start()
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    setup_handlers(app)
+    setup_scheduler(app)
+    await app.run_polling()
 
-# Compatibility fix for Render
-import nest_asyncio
-nest_asyncio.apply()
 
 if __name__ == "__main__":
-    asyncio.get_event_loop().run_until_complete(main())
+    asyncio.run(main())
