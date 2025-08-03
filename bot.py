@@ -20,7 +20,6 @@ REMINDER_FILE = f"{DATA_FOLDER}/reminders.json"
 DEFAULT_LANG = "he"
 
 scheduler = AsyncIOScheduler()
-scheduler.start()
 
 user_languages = {}
 reminders = {}
@@ -111,6 +110,9 @@ def main():
     app.add_handler(CommandHandler("lang", set_lang))
     app.add_handler(CommandHandler("add", add_reminder))
     app.add_handler(CallbackQueryHandler(button_handler))
+
+    # Start the scheduler only after event loop is available
+    scheduler.start()
 
     app.run_polling()
 
