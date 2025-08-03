@@ -79,13 +79,8 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone("Asia/Jerusalem"))
     next_time = now + timedelta(minutes=interval_minutes)
 
-    job_id = f"{user_id}_{int(next_time.timestamp())}"
-
     def send_reminder():
-        context.bot.send_message(
-            chat_id=user_id,
-            text=f"⏰ {text}"
-        )
+        context.bot.send_message(chat_id=user_id, text=f"⏰ {text}")
 
     scheduler.add_job(send_reminder, trigger="date", run_date=next_time)
     reminders.setdefault(user_id, []).append({
@@ -97,7 +92,7 @@ async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(f"{t(update.effective_user.id, 'reminder_set')} {interval_minutes} דקות")
 
-def main():
+async def main():
     if not os.path.exists(DATA_FOLDER):
         os.makedirs(DATA_FOLDER)
 
@@ -111,10 +106,8 @@ def main():
     app.add_handler(CommandHandler("add", add_reminder))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # Start the scheduler only after event loop is available
     scheduler.start()
-
-    app.run_polling()
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
