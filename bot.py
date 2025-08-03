@@ -23,7 +23,10 @@ def load_reminders() -> Dict:
     if not os.path.exists(DATA_FILE):
         return {"daily": [], "recurring": []}
     with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+        data.setdefault("daily", [])
+        data.setdefault("recurring", [])
+        return data
 
 def save_reminders(data: Dict):
     os.makedirs(os.path.dirname(DATA_FILE), exist_ok=True)
@@ -103,14 +106,12 @@ def schedule_jobs(app):
     scheduler.start()
 
 # --- Main ---
-async def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+if __name__ == "__main__":
+    import asyncio
+    app = asyncio.run(ApplicationBuilder().token(BOT_TOKEN).build())
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     schedule_jobs(app)
     print("Bot is running...")
-    await app.run_polling()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.run_polling()
