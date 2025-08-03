@@ -7,7 +7,7 @@ from typing import Dict
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (ApplicationBuilder, CallbackContext, CommandHandler,
-                          CallbackQueryHandler, MessageHandler, filters)
+                          CallbackQueryHandler, MessageHandler, filters, Application)
 
 # --- Globals ---
 DATA_FILE = "data/reminders.json"
@@ -89,11 +89,11 @@ async def handle_message(update: Update, context: CallbackContext):
     context.user_data["mode"] = None
 
 # --- Scheduler ---
-def schedule_jobs(app):
+def schedule_jobs(app: Application):
     scheduler = AsyncIOScheduler()
     data = load_reminders()
     for rem in data["daily"]:
-        scheduler.add_job(send_reminder, 'cron', hour=9, minute=0, args=[app.bot], kwargs={"chat_id": rem["chat_id"], "data": rem["text"]})
+        scheduler.add_job(app.bot.send_message, 'cron', hour=9, minute=0, kwargs={"chat_id": rem["chat_id"], "text": rem["text"]})
     for rem in data["recurring"]:
         last = datetime.fromisoformat(rem["last"])
         now = datetime.utcnow()
@@ -106,12 +106,14 @@ def schedule_jobs(app):
     scheduler.start()
 
 # --- Main ---
-if __name__ == "__main__":
-    import asyncio
-    app = asyncio.run(ApplicationBuilder().token(BOT_TOKEN).build())
+async def main():
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     schedule_jobs(app)
     print("Bot is running...")
-    app.run_polling()
+    await app.run_polling()
+
+if __name__ == "__main__":
+    asyncio.run(main())
