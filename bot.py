@@ -2,139 +2,140 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from pytz import timezone
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler, CallbackQueryHandler,
-    ContextTypes, filters
-)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pytz import timezone
 
-# הגדרות בסיסיות
-TIMEZONE = timezone("Asia/Jerusalem")
-LANGUAGES = {"he": "עברית", "en": "English"}
-REMINDERS_FILE = "reminders.json"
-LOCALE_FOLDER = "locale"
-DEFAULT_LANGUAGE = "he"
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler
 
-# טוקן מהסביבה (Render)
 from config import BOT_TOKEN
 
-# הגדרת לוגינג
-logging.basicConfig(level=logging.INFO)
+# === הגדרות ===
+LOCALE_FOLDER = "locale"
+DATA_FOLDER = "data"
+REMINDERS_FILE = f"{DATA_FOLDER}/reminders.json"
+DEFAULT_LANGUAGE = "he"
+TIMEZONE = timezone("Asia/Jerusalem")
+
+# === יומן ===
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# זיכרון זמני
-user_languages = {}
-scheduler = AsyncIOScheduler()
-
-# טעינת קבצי שפה
+# === טוען שפות ===
 translations = {}
-for lang_code in LANGUAGES:
-    with open(f"{LOCALE_FOLDER}/{lang_code}.json", encoding="utf-8") as f:
-        translations[lang_code] = json.load(f)
+for lang_code in os.listdir(LOCALE_FOLDER):
+    if lang_code.endswith(".json"):
+        with open(f"{LOCALE_FOLDER}/{lang_code}", encoding="utf-8") as f:
+            translations[lang_code.replace(".json", "")] = json.load(f)
 
-def t(user_id, key):
-    lang = user_languages.get(user_id, DEFAULT_LANGUAGE)
+def t(key: str, lang: str) -> str:
     return translations.get(lang, translations[DEFAULT_LANGUAGE]).get(key, key)
 
-# טעינת תזכורות מקובץ
-def load_reminders():
-    if not os.path.exists(REMINDERS_FILE):
-        return []
-    with open(REMINDERS_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-def save_reminders(reminders):
+# === ניהול מידע למשתמשים ===
+if not os.path.exists(REMINDERS_FILE):
+    os.makedirs(DATA_FOLDER, exist_ok=True)
     with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
-        json.dump(reminders, f, ensure_ascii=False, indent=2)
+        json.dump({"user_data": {}, "reminders": []}, f)
 
-# שליחת תזכורת עם כפתור אישור
+with open(REMINDERS_FILE, encoding="utf-8") as f:
+    state = json.load(f)
+
+def save_state():
+    with open(REMINDERS_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+# === מתזמן ===
+scheduler = AsyncIOScheduler(timezone=TIMEZONE)
+
 async def send_reminder(context: ContextTypes.DEFAULT_TYPE):
     job_data = context.job.data
+    user_id = job_data["user_id"]
     text = job_data["text"]
-    chat_ids = job_data["chat_ids"]
+    lang = state["user_data"].get(str(user_id), {}).get("lang", DEFAULT_LANGUAGE)
+    await context.bot.send_message(chat_id=user_id, text=f"{t('reminder', lang)}: {text}")
 
-    for chat_id in chat_ids:
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton(t(chat_id, "done_button"), callback_data=f"done|{text}")
-        ]])
-        await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=keyboard)
+# === פקודות ===
 
-# התחלת שיחה
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_languages[user.id] = DEFAULT_LANGUAGE
-    await update.message.reply_text(t(user.id, "start_message"))
-
-# תפריט בחירת שפה
-async def language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    buttons = [
-        [InlineKeyboardButton(name, callback_data=f"lang|{code}")]
-        for code, name in LANGUAGES.items()
+    user_id = update.effective_user.id
+    state["user_data"].setdefault(str(user_id), {"lang": DEFAULT_LANGUAGE})
+    save_state()
+    keyboard = [
+        [InlineKeyboardButton("עברית", callback_data="lang_he")],
+        [InlineKeyboardButton("English", callback_data="lang_en")]
     ]
-    await update.message.reply_text(t(user.id, "choose_language"),
-                                    reply_markup=InlineKeyboardMarkup(buttons))
+    await update.message.reply_text(
+        t("start", DEFAULT_LANGUAGE),
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
-# שינוי שפה
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-
     user_id = query.from_user.id
-    data = query.data
+    lang = query.data.split("_")[1]
+    state["user_data"][str(user_id)]["lang"] = lang
+    save_state()
+    await query.edit_message_text(t("choose_language", lang))
 
-    if data.startswith("lang|"):
-        lang = data.split("|")[1]
-        user_languages[user_id] = lang
-        await query.edit_message_text(t(user_id, "language_set"))
-    elif data.startswith("done|"):
-        task = data.split("|", 1)[1]
-        await query.edit_message_text(t(user_id, "task_completed") + f": {task}")
-
-# טיפול בטקסט חופשי כהוספת תזכורת
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    text = update.message.text.strip()
-
-    # פרשנות מבנית פשוטה — ציפייה לקלט בסגנון:
-    # [טקסט] | [מספר זמן] | [יחידה: דקות/שעות/ימים]
-    if "|" not in text:
-        await update.message.reply_text(t(user_id, "invalid_format"))
-        return
+    lang = state["user_data"].get(str(user_id), {}).get("lang", DEFAULT_LANGUAGE)
 
     try:
-        task_text, amount, unit = [s.strip() for s in text.split("|")]
-        amount = int(amount)
-    except Exception:
-        await update.message.reply_text(t(user_id, "invalid_format"))
-        return
+        # שימוש: /add 3h תזכורת
+        duration, *message_parts = context.args
+        message = " ".join(message_parts)
+        delta = parse_duration(duration)
+        due = datetime.now(TIMEZONE) + delta
 
-    now = datetime.now(TIMEZONE)
-    delay = {"minutes": "minutes", "hours": "hours", "days": "days"}.get(unit, "minutes")
-    next_time = now + timedelta(**{delay: amount})
+        job = scheduler.add_job(
+            send_reminder,
+            trigger="interval",
+            seconds=delta.total_seconds(),
+            args=[],
+            kwargs={},
+            data={"user_id": user_id, "text": message}
+        )
 
-    job_data = {"text": task_text, "chat_ids": [user_id]}
-    scheduler.add_job(send_reminder, "interval", **{delay: amount}, next_run_time=next_time, args=[context], kwargs={"job": None, "data": job_data})
+        state["reminders"].append({
+            "user_id": user_id,
+            "text": message,
+            "interval_seconds": delta.total_seconds(),
+            "lang": lang
+        })
+        save_state()
 
-    await update.message.reply_text(t(user_id, "reminder_set"))
+        await update.message.reply_text(f"{t('reminder_added', lang)} ({duration})")
 
-# פונקציה ראשית
-import asyncio
+    except Exception as e:
+        logger.error(str(e))
+        await update.message.reply_text(t("error_format", lang))
+
+def parse_duration(duration_str: str) -> timedelta:
+    if duration_str.endswith("h"):
+        return timedelta(hours=int(duration_str[:-1]))
+    elif duration_str.endswith("m"):
+        return timedelta(minutes=int(duration_str[:-1]))
+    elif duration_str.endswith("d"):
+        return timedelta(days=int(duration_str[:-1]))
+    else:
+        raise ValueError("Invalid duration format")
+
+# === הרצה ===
 
 def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    scheduler.configure(timezone=str(TIMEZONE))
-    scheduler.start()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("language", language))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(CallbackQueryHandler(set_language, pattern="^lang_"))
+    app.add_handler(CommandHandler("add", add_reminder))
 
-    asyncio.run(app.run_polling())
+    scheduler.start()
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
