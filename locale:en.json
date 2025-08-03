@@ -1,0 +1,9 @@
+{
+  "language_set": "Language set to English \ud83c\uddec\ud83c\udde7",
+  "reminder_set": "Reminder has been added \u2705",
+  "select_reminder_type": "What type of reminder would you like to add?",
+  "fixed_reminder": "\ud83d\udcc5 Fixed Schedule",
+  "dynamic_reminder": "\u23f1\ufe0f Based on Completion",
+  "cancel_success": "Reminder cancelled successfully \u2705",
+  "start_text": "Welcome! I'm here to help you manage baby reminders \ud83d\udc76"
+}
