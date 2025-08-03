@@ -1,6 +1,9 @@
 import json
 import os
 from datetime import datetime, timedelta
+from telegram import Update
+from telegram.ext import ContextTypes
+
 
 DATA_FOLDER = "data"
 REMINDERS_FILE = os.path.join(DATA_FOLDER, "reminders.json")
@@ -41,3 +44,7 @@ def mark_reminder_as_sent(user_id, reminder):
             r["notified"] = True
             break
     save_reminders(reminders)
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Available commands:\n/start\n/help\n/add_daily\n/add_cyclic\n/list\n/done\n/cancel")
+
