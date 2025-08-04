@@ -1,30 +1,25 @@
 import os
 import json
-import logging
-from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import datetime
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup
+)
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler,
-    filters, ContextTypes
+    ApplicationBuilder, CommandHandler, ContextTypes,
+    CallbackQueryHandler, MessageHandler, ConversationHandler, filters
 )
 
 REMINDERS_FILE = "data/reminders.json"
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "your_token_here")
 
 reminders = {}
-user_states = {}
-TEMP_DATA = {}
+REMINDER_TYPES = ["⏰ קבועה", "🔁 מחזורית"]
+TIME_UNITS = ["דקה", "שעה", "יום", "שבוע"]
 
-UNITS = {
-    "דקה": "minutes",
-    "שעה": "hours",
-    "יום": "days",
-    "שבוע": "weeks"
-}
+CHOOSING_ACTION, ENTER_NAME, CHOOSE_TYPE, CHOOSE_UNIT, ENTER_VALUE, HANDLE_DONE, DELETE_SELECT = range(7)
 
-logging.basicConfig(level=logging.INFO)
-
-
+# Load and save
 def load_reminders():
     global reminders
     if os.path.exists(REMINDERS_FILE):
@@ -33,196 +28,167 @@ def load_reminders():
     else:
         reminders = {}
 
-
 def save_reminders():
     with open(REMINDERS_FILE, "w") as f:
-        json.dump(reminders, f)
+        json.dump(reminders, f, ensure_ascii=False)
 
-
+# Start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
     keyboard = [
-        [InlineKeyboardButton("➕ הוסף פעולה חדשה", callback_data="add_reminder")],
-        [InlineKeyboardButton("📝 הזן שביצעת פעולה", callback_data="mark_done")],
-        [InlineKeyboardButton("📋 הצג תזכורות קיימות", callback_data="show_reminders")],
-        [InlineKeyboardButton("❌ מחק תזכורת", callback_data="delete_reminder")]
+        ["➕ הוסף פעולה חדשה"],
+        ["📝 הזן שביצעת פעולה"],
+        ["📋 הצג תזכורות קיימות"],
+        ["❌ מחק תזכורת"]
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text("שלום! בחר פעולה מהתפריט:", reply_markup=reply_markup)
+    await update.message.reply_text("שלום! בחר פעולה מהתפריט:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
 
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = str(query.from_user.id)
-
-    if query.data == "add_reminder":
-        TEMP_DATA[user_id] = {}
-        user_states[user_id] = "WAITING_NAME"
-        await query.message.reply_text("הכנס שם לפעולה:")
-    elif query.data == "mark_done":
-        await handle_mark_done_menu(update, context)
-    elif query.data == "show_reminders":
-        await list_reminders(update, context)
-    elif query.data == "delete_reminder":
-        await handle_delete_menu(update, context)
-
-
+# Handle main menu text
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.effective_user.id)
     text = update.message.text
+    if text == "➕ הוסף פעולה חדשה":
+        await update.message.reply_text("הכנס שם לפעולה:")
+        return ENTER_NAME
+    elif text == "📝 הזן שביצעת פעולה":
+        return await show_done_actions(update)
+    elif text == "📋 הצג תזכורות קיימות":
+        return await list_reminders(update, context)
+    elif text == "❌ מחק תזכורת":
+        return await show_delete_menu(update)
+    else:
+        await update.message.reply_text("בחר פעולה מהתפריט:")
+        return CHOOSING_ACTION
 
-    state = user_states.get(user_id)
-    temp = TEMP_DATA.get(user_id, {})
+# Step 1 - enter name
+async def enter_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["name"] = update.message.text
+    keyboard = [[btn] for btn in REMINDER_TYPES]
+    await update.message.reply_text("בחר סוג תזכורת:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True))
+    return CHOOSE_TYPE
 
-    if state == "WAITING_NAME":
-        temp["name"] = text
-        user_states[user_id] = "WAITING_TYPE"
-        TEMP_DATA[user_id] = temp
-        keyboard = [
-            [InlineKeyboardButton("⏰ קבועה", callback_data="fixed")],
-            [InlineKeyboardButton("🔁 מחזורית מתאפסת", callback_data="resetting")]
-        ]
-        await update.message.reply_text("בחר סוג תזכורת:", reply_markup=InlineKeyboardMarkup(keyboard))
-    elif state == "WAITING_UNIT":
-        if text not in UNITS:
-            await update.message.reply_text("יחידת זמן לא חוקית. בחר אחת: דקה, שעה, יום, שבוע.")
-            return
-        temp["unit"] = text
-        user_states[user_id] = "WAITING_AMOUNT"
-        await update.message.reply_text("הכנס מספר יחידות זמן (למשל: 3):")
-    elif state == "WAITING_AMOUNT":
-        if not text.isdigit():
-            await update.message.reply_text("נא להזין מספר תקין.")
-            return
-        temp["amount"] = int(text)
-        save_final_reminder(user_id, temp)
-        await update.message.reply_text("התזכורת נשמרה בהצלחה!")
-        user_states.pop(user_id, None)
-        TEMP_DATA.pop(user_id, None)
-    elif state == "WAITING_DONE_SELECTION":
-        await update.message.reply_text("אנא בחר פעולה מתוך התפריט.")
+# Step 2 - choose type
+async def choose_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["type"] = update.message.text
+    keyboard = [[unit] for unit in TIME_UNITS]
+    await update.message.reply_text("בחר יחידת זמן:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True))
+    return CHOOSE_UNIT
 
+# Step 3 - choose unit
+async def choose_unit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["unit"] = update.message.text
+    await update.message.reply_text("הכנס מספר יחידות זמן (למשל: 3):")
+    return ENTER_VALUE
 
-def save_final_reminder(user_id, temp):
-    now = datetime.now()
+# Step 4 - enter value
+async def enter_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        value = int(update.message.text)
+        context.user_data["value"] = value
+    except ValueError:
+        await update.message.reply_text("הכנס מספר חוקי.")
+        return ENTER_VALUE
+
+    user_id = str(update.effective_user.id)
     if user_id not in reminders:
         reminders[user_id] = []
 
     reminder = {
-        "name": temp["name"],
-        "type": temp["type"],
-        "unit": temp["unit"],
-        "amount": temp["amount"],
-        "last_time": now.isoformat()
+        "name": context.user_data["name"],
+        "type": context.user_data["type"],
+        "unit": context.user_data["unit"],
+        "value": context.user_data["value"],
+        "last_done": None
     }
     reminders[user_id].append(reminder)
     save_reminders()
+    await update.message.reply_text("✅ התזכורת נוספה!")
+    return ConversationHandler.END
 
+# Show reminders
+async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    if user_id not in reminders or not reminders[user_id]:
+        await update.message.reply_text("אין תזכורות קיימות.")
+        return CHOOSING_ACTION
 
-async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = str(query.from_user.id)
-    temp = TEMP_DATA.get(user_id, {})
-    choice = query.data
+    msg = "📋 התזכורות שלך:\n"
+    for idx, r in enumerate(reminders[user_id], 1):
+        msg += f"{idx}. {r['name']} – {r['type']} כל {r['value']} {r['unit']}\n"
+    await update.message.reply_text(msg)
+    return CHOOSING_ACTION
 
-    if choice == "fixed":
-        temp["type"] = "fixed"
-    elif choice == "resetting":
-        temp["type"] = "resetting"
-    else:
-        await query.message.reply_text("בחירה לא חוקית.")
-        return
-
-    user_states[user_id] = "WAITING_UNIT"
-    TEMP_DATA[user_id] = temp
-    await query.message.reply_text("בחר יחידת זמן: דקה, שעה, יום, שבוע.")
-
-
-async def handle_mark_done_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = str(query.from_user.id)
-    user_reminders = reminders.get(user_id, [])
+# Done actions
+async def show_done_actions(update: Update):
+    user_id = str(update.effective_user.id)
+    if user_id not in reminders or not reminders[user_id]:
+        await update.message.reply_text("אין תזכורות לסמן.")
+        return CHOOSING_ACTION
 
     buttons = []
-    for i, r in enumerate(user_reminders):
-        if r["type"] == "resetting":
-            buttons.append([InlineKeyboardButton(r["name"], callback_data=f"done_{i}")])
+    for i, r in enumerate(reminders[user_id]):
+        if r["type"] == "🔁 מחזורית":
+            buttons.append([InlineKeyboardButton(r["name"], callback_data=f"done:{i}")])
 
     if not buttons:
-        await query.message.reply_text("אין תזכורות מחזוריות לסימון.")
-        return
+        await update.message.reply_text("אין תזכורות מחזוריות לסמן.")
+        return CHOOSING_ACTION
 
-    await query.message.reply_text("בחר תזכורת לביצוע:", reply_markup=InlineKeyboardMarkup(buttons))
-
+    await update.message.reply_text("בחר פעולה שביצעת:", reply_markup=InlineKeyboardMarkup(buttons))
+    return HANDLE_DONE
 
 async def handle_done_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
 
-    index = int(query.data.replace("done_", ""))
-    reminders[user_id][index]["last_time"] = datetime.now().isoformat()
+    index = int(query.data.split(":")[1])
+    reminders[user_id][index]["last_done"] = datetime.datetime.now().isoformat()
     save_reminders()
-    await query.message.reply_text("עודכן! הזמן אופס בהצלחה.")
+    await query.edit_message_text("🎉 עודכן שביצעת את הפעולה!")
+    return ConversationHandler.END
 
+# Delete reminders
+async def show_delete_menu(update: Update):
+    user_id = str(update.effective_user.id)
+    if user_id not in reminders or not reminders[user_id]:
+        await update.message.reply_text("אין תזכורות למחיקה.")
+        return CHOOSING_ACTION
 
-async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = str(query.from_user.id)
-    user_reminders = reminders.get(user_id, [])
-
-    if not user_reminders:
-        await query.message.reply_text("אין תזכורות.")
-        return
-
-    msg = "📋 רשימת תזכורות:\n"
-    for i, r in enumerate(user_reminders, 1):
-        msg += f"{i}. {r['name']} ({'קבועה' if r['type']=='fixed' else 'מחזורית'}, כל {r['amount']} {r['unit']})\n"
-    await query.message.reply_text(msg)
-
-
-async def handle_delete_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    user_id = str(query.from_user.id)
-    user_reminders = reminders.get(user_id, [])
-
-    if not user_reminders:
-        await query.message.reply_text("אין מה למחוק.")
-        return
-
-    buttons = []
-    for i, r in enumerate(user_reminders):
-        buttons.append([InlineKeyboardButton(r["name"], callback_data=f"delete_{i}")])
-
-    await query.message.reply_text("בחר תזכורת למחיקה:", reply_markup=InlineKeyboardMarkup(buttons))
-
+    keyboard = [[InlineKeyboardButton(r["name"], callback_data=f"delete:{i}")] for i, r in enumerate(reminders[user_id])]
+    await update.message.reply_text("בחר תזכורת למחיקה:", reply_markup=InlineKeyboardMarkup(keyboard))
+    return DELETE_SELECT
 
 async def handle_delete_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = str(query.from_user.id)
-
-    index = int(query.data.replace("delete_", ""))
-    name = reminders[user_id][index]["name"]
-    del reminders[user_id][index]
+    index = int(query.data.split(":")[1])
+    deleted = reminders[user_id].pop(index)
     save_reminders()
-    await query.message.reply_text(f"התזכורת '{name}' נמחקה.")
+    await query.edit_message_text(f"🗑️ התזכורת '{deleted['name']}' נמחקה.")
+    return ConversationHandler.END
 
-
+# Main
 def main():
     load_reminders()
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler, pattern="^(add_reminder|mark_done|show_reminders|delete_reminder)$"))
-    app.add_handler(CallbackQueryHandler(handle_type_selection, pattern="^(fixed|resetting)$"))
-    app.add_handler(CallbackQueryHandler(handle_done_callback, pattern="^done_\\d+$"))
-    app.add_handler(CallbackQueryHandler(handle_delete_callback, pattern="^delete_\\d+$"))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text))
-    app.run_polling()
 
+    conv = ConversationHandler(
+        entry_points=[CommandHandler("start", start)],
+        states={
+            CHOOSING_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)],
+            ENTER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_name)],
+            CHOOSE_TYPE: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_type)],
+            CHOOSE_UNIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, choose_unit)],
+            ENTER_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, enter_value)],
+            HANDLE_DONE: [CallbackQueryHandler(handle_done_callback, pattern="^done:\\d+")],
+            DELETE_SELECT: [CallbackQueryHandler(handle_delete_callback, pattern="^delete:\\d+")]
+        },
+        fallbacks=[CommandHandler("start", start)],
+        allow_reentry=True
+    )
+
+    app.add_handler(conv)
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
