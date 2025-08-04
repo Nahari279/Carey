@@ -1,13 +1,14 @@
 import json
 import logging
 import os
-import asyncio
 from datetime import datetime, timedelta
 from typing import Dict
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (ApplicationBuilder, CallbackContext, CommandHandler,
-                          CallbackQueryHandler, MessageHandler, filters, Application)
+from telegram.ext import (
+    ApplicationBuilder, CallbackContext, CommandHandler,
+    CallbackQueryHandler, MessageHandler, filters, Application
+)
 
 # --- Globals ---
 DATA_FILE = "data/reminders.json"
@@ -15,10 +16,13 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 LANGUAGES = {"he": "עברית", "en": "English"}
 
 # --- Logger ---
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-# --- Load reminders ---
+# --- Load/Save Reminders ---
 def load_reminders() -> Dict:
     if not os.path.exists(DATA_FILE):
         return {"daily": [], "recurring": []}
@@ -33,12 +37,7 @@ def save_reminders(data: Dict):
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
-# --- Send Reminder ---
-async def send_reminder(context: CallbackContext):
-    job = context.job
-    await context.bot.send_message(chat_id=job.chat_id, text=job.data)
-
-# --- Commands ---
+# --- Handlers ---
 async def start(update: Update, context: CallbackContext):
     buttons = [
         [InlineKeyboardButton("הוסף תזכורת יומית", callback_data="add_daily")],
@@ -56,7 +55,7 @@ async def handle_buttons(update: Update, context: CallbackContext):
         await query.message.reply_text("הכנס את הטקסט של התזכורת היומית:")
     elif data == "add_recurring":
         context.user_data["mode"] = "recurring"
-        await query.message.reply_text("הכנס תזכורת מחזורית בפורמט: טקסט | ימים (3=כל 3 ימים):")
+        await query.message.reply_text("הכנס תזכורת מחזורית בפורמט: טקסט | ימים (למשל 3=כל 3 ימים):")
     elif data == "change_lang":
         buttons = [[InlineKeyboardButton(v, callback_data=f"set_lang_{k}")] for k, v in LANGUAGES.items()]
         await query.message.reply_text("Select language:", reply_markup=InlineKeyboardMarkup(buttons))
@@ -80,12 +79,16 @@ async def handle_message(update: Update, context: CallbackContext):
             parts = text.split("|")
             rem_text = parts[0].strip()
             days = int(parts[1].strip())
-            data["recurring"].append({"chat_id": chat_id, "text": rem_text, "interval": days, "last": datetime.utcnow().isoformat()})
+            data["recurring"].append({
+                "chat_id": chat_id,
+                "text": rem_text,
+                "interval": days,
+                "last": datetime.utcnow().isoformat()
+            })
             save_reminders(data)
             await update.message.reply_text("✅ נוספה תזכורת מחזורית")
-        except:
+        except Exception:
             await update.message.reply_text("❌ פורמט שגוי. השתמש בפורמט: טקסט | ימים")
-
     context.user_data["mode"] = None
 
 # --- Scheduler ---
@@ -93,27 +96,35 @@ def schedule_jobs(app: Application):
     scheduler = AsyncIOScheduler()
     data = load_reminders()
     for rem in data.get("daily", []):
-        scheduler.add_job(app.bot.send_message, 'cron', hour=9, minute=0, kwargs={"chat_id": rem["chat_id"], "text": rem["text"]})
+        scheduler.add_job(
+            app.bot.send_message,
+            trigger='cron',
+            hour=9, minute=0,
+            kwargs={"chat_id": rem["chat_id"], "text": rem["text"]}
+        )
     for rem in data.get("recurring", []):
-        last = datetime.fromisoformat(rem["last"])
-        now = datetime.utcnow()
-        days = rem["interval"]
-        next_run = last + timedelta(days=days)
-        if next_run <= now:
-            app.create_task(app.bot.send_message(chat_id=rem["chat_id"], text=rem["text"]))
-            rem["last"] = now.isoformat()
-            save_reminders(data)
+        try:
+            last = datetime.fromisoformat(rem["last"])
+            now = datetime.utcnow()
+            days = rem["interval"]
+            next_run = last + timedelta(days=days)
+            if next_run <= now:
+                app.create_task(app.bot.send_message(chat_id=rem["chat_id"], text=rem["text"]))
+                rem["last"] = now.isoformat()
+                save_reminders(data)
+        except Exception as e:
+            logger.error(f"Recurring reminder error: {e}")
     scheduler.start()
 
-# --- Main ---
-async def main():
+# --- Init Application ---
+def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_buttons))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     schedule_jobs(app)
     print("Bot is running...")
-    await app.run_polling()
+    app.run_polling()
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
