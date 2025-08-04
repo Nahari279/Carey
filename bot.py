@@ -1,194 +1,194 @@
-import json
 import os
-import datetime
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters, ConversationHandler
+import json
+import logging
+from datetime import datetime, timedelta
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext, ConversationHandler
 
 DATA_FILE = "data/reminders.json"
-if not os.path.exists("data"):
-    os.makedirs("data")
-if not os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "w") as f:
-        json.dump({}, f)
-
-CHOOSING_ACTION, TYPING_NAME, CHOOSING_TYPE, CHOOSING_UNIT, TYPING_INTERVAL = range(5)
-ADDING_ACTION, MARKING_DONE, SHOWING_REMINDERS, DELETING_REMINDER = range(5, 9)
-
-main_menu_keyboard = [
-    ["➕ הוסף פעולה חדשה"],
-    ["📝 הזן שביצעת פעולה"],
-    ["📋 הצג תזכורות קיימות"],
-    ["❌ מחק תזכורת"]
-]
-main_menu_markup = ReplyKeyboardMarkup(main_menu_keyboard, one_time_keyboard=False, resize_keyboard=True)
-
-type_keyboard = [["⏰ קבועה", "🔁 מחזורית מתאפסת"]]
-type_markup = ReplyKeyboardMarkup(type_keyboard, one_time_keyboard=True, resize_keyboard=True)
-
-unit_keyboard = [["דקה", "שעה"], ["יום", "שבוע"]]
-unit_markup = ReplyKeyboardMarkup(unit_keyboard, one_time_keyboard=True, resize_keyboard=True)
-
 reminder_data = {}
 
+# Ensure data directory exists
+if not os.path.exists("data"):
+    os.makedirs("data")
+
+# Create empty reminders file if it doesn't exist
+if not os.path.exists(DATA_FILE):
+    with open(DATA_FILE, "w") as f:
+        f.write("{}")
+
+# Load reminders safely
 def load_reminders():
     global reminder_data
-    with open(DATA_FILE, "r") as f:
-        reminder_data = json.load(f)
+    try:
+        with open(DATA_FILE, "r") as f:
+            content = f.read().strip()
+            reminder_data = json.loads(content) if content else {}
+    except (json.JSONDecodeError, FileNotFoundError):
+        reminder_data = {}
 
 def save_reminders():
     with open(DATA_FILE, "w") as f:
-        json.dump(reminder_data, f, ensure_ascii=False)
+        json.dump(reminder_data, f, ensure_ascii=False, indent=2)
 
-def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    update.message.reply_text("שלום! אני הבוט BabyCareBot 👶", reply_markup=main_menu_markup)
-    return CHOOSING_ACTION
+def start(update: Update, context: CallbackContext):
+    show_main_menu(update)
 
-def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def show_main_menu(update: Update):
+    keyboard = [
+        [KeyboardButton("➕ הוסף פעולה חדשה")],
+        [KeyboardButton("📝 הזן שביצעת פעולה")],
+        [KeyboardButton("📋 הצג תזכורות קיימות")],
+        [KeyboardButton("❌ מחק תזכורת")]
+    ]
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    update.message.reply_text("בחר פעולה מהתפריט:", reply_markup=reply_markup)
+
+def handle_text(update: Update, context: CallbackContext):
     text = update.message.text
     if text == "➕ הוסף פעולה חדשה":
-        update.message.reply_text("כתוב את שם הפעולה שברצונך להוסיף:")
-        return TYPING_NAME
+        return add_reminder_start(update, context)
     elif text == "📝 הזן שביצעת פעולה":
-        return handle_mark_action(update, context)
+        return log_action(update, context)
     elif text == "📋 הצג תזכורות קיימות":
         return show_reminders(update, context)
     elif text == "❌ מחק תזכורת":
-        return delete_reminder(update, context)
+        return delete_reminder_start(update, context)
     else:
-        update.message.reply_text("אנא בחר פעולה מהתפריט.", reply_markup=main_menu_markup)
-        return CHOOSING_ACTION
+        update.message.reply_text("בחר פעולה מהתפריט.")
+        return ConversationHandler.END
 
-def receive_action_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["action_name"] = update.message.text
-    update.message.reply_text("בחר את סוג התזכורת:", reply_markup=type_markup)
-    return CHOOSING_TYPE
+# === הוספת תזכורת חדשה ===
+ADD_NAME, ADD_TYPE, ADD_UNIT, ADD_AMOUNT = range(4)
 
-def receive_action_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["reminder_type"] = "fixed" if "קבועה" in update.message.text else "reset"
-    update.message.reply_text("בחר את יחידת הזמן:", reply_markup=unit_markup)
-    return CHOOSING_UNIT
+def add_reminder_start(update: Update, context: CallbackContext):
+    update.message.reply_text("הכנס שם פעולה:")
+    return ADD_NAME
 
-def receive_time_unit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def add_reminder_name(update: Update, context: CallbackContext):
+    context.user_data["name"] = update.message.text
+    keyboard = [[KeyboardButton("⏰ קבועה")], [KeyboardButton("🔁 מחזורית מתאפסת")]]
+    update.message.reply_text("בחר סוג תזכורת:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return ADD_TYPE
+
+def add_reminder_type(update: Update, context: CallbackContext):
+    context.user_data["type"] = update.message.text
+    keyboard = [[KeyboardButton("דקה")], [KeyboardButton("שעה")], [KeyboardButton("יום")], [KeyboardButton("שבוע")]]
+    update.message.reply_text("בחר יחידת זמן:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return ADD_UNIT
+
+def add_reminder_unit(update: Update, context: CallbackContext):
     context.user_data["unit"] = update.message.text
-    update.message.reply_text("הכנס את מספר יחידות הזמן (למשל: 3):")
-    return TYPING_INTERVAL
+    update.message.reply_text("הכנס מספר יחידות זמן (למשל: 3):")
+    return ADD_AMOUNT
 
-def receive_time_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+def add_reminder_amount(update: Update, context: CallbackContext):
     try:
-        interval = int(update.message.text)
-    except ValueError:
-        update.message.reply_text("יש להזין מספר בלבד. נסה שוב:")
-        return TYPING_INTERVAL
-
-    user_id = str(update.message.from_user.id)
-    name = context.user_data["action_name"]
-    reminder_type = context.user_data["reminder_type"]
-    unit = context.user_data["unit"]
-    value = interval
-    now = datetime.datetime.now().isoformat()
-
-    if user_id not in reminder_data:
-        reminder_data[user_id] = []
-
-    reminder_data[user_id].append({
-        "name": name,
-        "type": reminder_type,
-        "unit": unit,
-        "interval": value,
-        "last_done": now
-    })
-
-    save_reminders()
-
-    update.message.reply_text("✅ הפעולה נוספה בהצלחה!", reply_markup=main_menu_markup)
-    return CHOOSING_ACTION
-
-def handle_mark_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id not in reminder_data or not reminder_data[user_id]:
-        update.message.reply_text("אין פעולות להזין עבורן ביצוע.", reply_markup=main_menu_markup)
-        return CHOOSING_ACTION
-
-    buttons = [[r["name"]] for r in reminder_data[user_id] if r["type"] == "reset"]
-    markup = ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
-    update.message.reply_text("בחר את הפעולה שביצעת כעת:", reply_markup=markup)
-    return MARKING_DONE
-
-def mark_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    action_name = update.message.text
-    found = False
-
-    for r in reminder_data.get(user_id, []):
-        if r["name"] == action_name and r["type"] == "reset":
-            r["last_done"] = datetime.datetime.now().isoformat()
-            found = True
-            break
-
-    if found:
+        amount = int(update.message.text)
+        chat_id = str(update.message.chat_id)
+        name = context.user_data["name"]
+        reminder = {
+            "type": context.user_data["type"],
+            "unit": context.user_data["unit"],
+            "amount": amount,
+            "last_done": datetime.now().isoformat() if "מחזורית" in context.user_data["type"] else None
+        }
+        if chat_id not in reminder_data:
+            reminder_data[chat_id] = {}
+        reminder_data[chat_id][name] = reminder
         save_reminders()
-        update.message.reply_text("⏱️ התזכורת אופסה!", reply_markup=main_menu_markup)
-    else:
-        update.message.reply_text("לא נמצאה פעולה כזו למחזורית מתאפסת.", reply_markup=main_menu_markup)
+        update.message.reply_text("התזכורת נוספה בהצלחה.")
+    except:
+        update.message.reply_text("שגיאה. ודא שהזנת מספר תקין.")
+    show_main_menu(update)
+    return ConversationHandler.END
 
-    return CHOOSING_ACTION
+# === רישום ביצוע פעולה ===
+def log_action(update: Update, context: CallbackContext):
+    chat_id = str(update.message.chat_id)
+    if chat_id not in reminder_data or not reminder_data[chat_id]:
+        update.message.reply_text("אין תזכורות.")
+        return ConversationHandler.END
+    keyboard = [[KeyboardButton(name)] for name in reminder_data[chat_id]]
+    update.message.reply_text("בחר פעולה שביצעת:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return 100  # Arbitrary state
 
-def show_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    reminders = reminder_data.get(user_id, [])
-
-    if not reminders:
-        update.message.reply_text("אין תזכורות קיימות.", reply_markup=main_menu_markup)
-        return CHOOSING_ACTION
-
-    msg = "📋 רשימת תזכורות:\n"
-    for r in reminders:
-        msg += f"🔹 {r['name']} – {'קבועה' if r['type']=='fixed' else 'מחזורית מתאפסת'}, כל {r['interval']} {r['unit']}\n"
-
-    update.message.reply_text(msg, reply_markup=main_menu_markup)
-    return CHOOSING_ACTION
-
-def delete_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id not in reminder_data or not reminder_data[user_id]:
-        update.message.reply_text("אין תזכורות למחיקה.", reply_markup=main_menu_markup)
-        return CHOOSING_ACTION
-
-    buttons = [[r["name"]] for r in reminder_data[user_id]]
-    markup = ReplyKeyboardMarkup(buttons, one_time_keyboard=True, resize_keyboard=True)
-    update.message.reply_text("בחר את התזכורת שברצונך למחוק:", reply_markup=markup)
-    return DELETING_REMINDER
-
-def confirm_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
+def mark_done(update: Update, context: CallbackContext):
+    chat_id = str(update.message.chat_id)
     name = update.message.text
+    if chat_id in reminder_data and name in reminder_data[chat_id]:
+        if "מחזורית" in reminder_data[chat_id][name]["type"]:
+            reminder_data[chat_id][name]["last_done"] = datetime.now().isoformat()
+            save_reminders()
+            update.message.reply_text("הפעולה סומנה כהושלמה.")
+        else:
+            update.message.reply_text("תזכורת זו אינה מחזורית מתאפסת.")
+    else:
+        update.message.reply_text("תזכורת לא נמצאה.")
+    show_main_menu(update)
+    return ConversationHandler.END
 
-    reminder_data[user_id] = [r for r in reminder_data[user_id] if r["name"] != name]
-    save_reminders()
+# === הצגת תזכורות ===
+def show_reminders(update: Update, context: CallbackContext):
+    chat_id = str(update.message.chat_id)
+    if chat_id not in reminder_data or not reminder_data[chat_id]:
+        update.message.reply_text("אין תזכורות.")
+        return
+    messages = []
+    for name, info in reminder_data[chat_id].items():
+        msg = f"🔔 {name} - {info['type']}, כל {info['amount']} {info['unit']}"
+        if info.get("last_done"):
+            msg += f"\nבוצע לאחרונה: {info['last_done']}"
+        messages.append(msg)
+    update.message.reply_text("\n\n".join(messages))
 
-    update.message.reply_text("❌ התזכורת נמחקה.", reply_markup=main_menu_markup)
-    return CHOOSING_ACTION
+# === מחיקת תזכורת ===
+def delete_reminder_start(update: Update, context: CallbackContext):
+    chat_id = str(update.message.chat_id)
+    if chat_id not in reminder_data or not reminder_data[chat_id]:
+        update.message.reply_text("אין תזכורות למחיקה.")
+        return ConversationHandler.END
+    keyboard = [[KeyboardButton(name)] for name in reminder_data[chat_id]]
+    update.message.reply_text("בחר תזכורת למחיקה:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    return 200  # Arbitrary state
 
+def delete_reminder_confirm(update: Update, context: CallbackContext):
+    chat_id = str(update.message.chat_id)
+    name = update.message.text
+    if name in reminder_data.get(chat_id, {}):
+        del reminder_data[chat_id][name]
+        save_reminders()
+        update.message.reply_text("התזכורת נמחקה.")
+    else:
+        update.message.reply_text("תזכורת לא נמצאה.")
+    show_main_menu(update)
+    return ConversationHandler.END
+
+# === הגדרת הבוט ===
 def main():
     load_reminders()
-    app = ApplicationBuilder().token(os.environ["BOT_TOKEN"]).build()
+    TOKEN = os.environ.get("BOT_TOKEN")
+    updater = Updater(TOKEN, use_context=True)
+    dp = updater.dispatcher
 
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[MessageHandler(Filters.text & ~Filters.command, handle_text)],
         states={
-            CHOOSING_ACTION: [MessageHandler(filters.TEXT, handle_menu)],
-            TYPING_NAME: [MessageHandler(filters.TEXT, receive_action_name)],
-            CHOOSING_TYPE: [MessageHandler(filters.TEXT, receive_action_type)],
-            CHOOSING_UNIT: [MessageHandler(filters.TEXT, receive_time_unit)],
-            TYPING_INTERVAL: [MessageHandler(filters.TEXT, receive_time_interval)],
-            MARKING_DONE: [MessageHandler(filters.TEXT, mark_done)],
-            DELETING_REMINDER: [MessageHandler(filters.TEXT, confirm_delete)],
+            ADD_NAME: [MessageHandler(Filters.text & ~Filters.command, add_reminder_name)],
+            ADD_TYPE: [MessageHandler(Filters.text & ~Filters.command, add_reminder_type)],
+            ADD_UNIT: [MessageHandler(Filters.text & ~Filters.command, add_reminder_unit)],
+            ADD_AMOUNT: [MessageHandler(Filters.text & ~Filters.command, add_reminder_amount)],
+            100: [MessageHandler(Filters.text & ~Filters.command, mark_done)],
+            200: [MessageHandler(Filters.text & ~Filters.command, delete_reminder_confirm)],
         },
         fallbacks=[]
     )
 
-    app.add_handler(conv_handler)
-    app.run_polling()
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(conv_handler)
+
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
     main()
