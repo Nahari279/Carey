@@ -92,9 +92,9 @@ async def handle_message(update: Update, context: CallbackContext):
 def schedule_jobs(app: Application):
     scheduler = AsyncIOScheduler()
     data = load_reminders()
-    for rem in data["daily"]:
+    for rem in data.get("daily", []):
         scheduler.add_job(app.bot.send_message, 'cron', hour=9, minute=0, kwargs={"chat_id": rem["chat_id"], "text": rem["text"]})
-    for rem in data["recurring"]:
+    for rem in data.get("recurring", []):
         last = datetime.fromisoformat(rem["last"])
         now = datetime.utcnow()
         days = rem["interval"]
