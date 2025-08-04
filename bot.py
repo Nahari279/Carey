@@ -32,15 +32,20 @@ def save_reminders():
     with open(REMINDERS_FILE, "w") as f:
         json.dump(reminders, f, ensure_ascii=False)
 
-# Start
+# Start command
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
-        ["➕ הוסף פעולה חדשה"],
-        ["📝 הזן שביצעת פעולה"],
-        ["📋 הצג תזכורות קיימות"],
-        ["❌ מחק תזכורת"]
+        [InlineKeyboardButton("➕ הוסף פעולה חדשה", callback_data="add_reminder")],
+        [InlineKeyboardButton("📝 הזן שביצעת פעולה", callback_data="log_action")],
+        [InlineKeyboardButton("📋 הצג תזכורות קיימות", callback_data="list_reminders")],
+        [InlineKeyboardButton("❌ מחק תזכורת", callback_data="delete_reminder")]
     ]
-    await update.message.reply_text("שלום! בחר פעולה מהתפריט:", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await update.message.reply_text(
+        "שלום! בחר פעולה מהתפריט:",
+        reply_markup=reply_markup
+    )
 
 # Handle main menu text
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
